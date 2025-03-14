@@ -4,7 +4,8 @@ import os
 import json
 import pandas as pd
 import matplotlib.pyplot as plt
-import glob
+import io
+from hdfs import InsecureClient  # Required for HDFS access
 
 # -------------------- CONFIGURATION --------------------
 st.set_page_config(
@@ -33,8 +34,10 @@ st.markdown("""
     </style>
 """, unsafe_allow_html=True)
 
-# -------------------- SET DATA PATH --------------------
-DATA_PATH = r"D:\nyc_taxi_2023_clean"  # Ensure this matches your actual folder path
+# -------------------- SETUP HDFS CONNECTION --------------------
+HDFS_URL = "http://node-master:50070"  # Update this if needed
+HDFS_PATH = "/data/nyc_taxi_2023_clean"  # HDFS directory for your Parquet files
+client = InsecureClient(HDFS_URL, user="supakin")  # Update user if needed
 
 # -------------------- FUNCTION TO SAVE & LOAD CHAT HISTORY --------------------
 CHAT_HISTORY_FILE = "chat_history.json"
@@ -146,16 +149,20 @@ if user_input := st.chat_input("Ask about NYC taxis (2023 data only)! 🚖"):
     # Save to file
     save_chat_history()
 
-# -------------------- LOAD PARQUET FILES --------------------
+# -------------------- LOAD PARQUET FILES FROM HDFS --------------------
 st.markdown("### 📊 NYC Taxi Data Insights (2023)")
 st.markdown("Below are some key insights into the taxi rides in NYC for 2023.")
 
-# Find all parquet files
-parquet_files = glob.glob(f"{DATA_PATH}/*.parquet")
+try:
+    parquet_files = client.list(HDFS_PATH)  # List files in HDFS directory
 
-if parquet_files:
-    try:
-        df_list = [pd.read_parquet(file) for file in parquet_files]
+    if parquet_files:
+        df_list = []
+        for file in parquet_files:
+            with client.read(f"{HDFS_PATH}/{file}") as reader:
+                parquet_data = io.BytesIO(reader.read())  # Read Parquet file into memory
+                df_list.append(pd.read_parquet(parquet_data))  # Load into Pandas
+        
         df = pd.concat(df_list, ignore_index=True)
 
         if "hour" in df.columns and "fare_amount" in df.columns:
@@ -168,10 +175,11 @@ if parquet_files:
         else:
             st.warning("⚠️ **Missing 'hour' or 'fare_amount' column in the dataset.** Check Parquet files.")
 
-    except Exception as e:
-        st.error(f"❌ **Error loading Parquet files:** {str(e)}")
-else:
-    st.error("🚨 **No Parquet files found!** Please check the directory path.")
+    else:
+        st.error("🚨 **No Parquet files found in HDFS!** Please check HDFS directory path.")
+
+except Exception as e:
+    st.error(f"❌ **Error loading Parquet files from HDFS:** {str(e)}")
 
 # -------------------- ADD FEEDBACK SYSTEM --------------------
 st.markdown("### ⭐ Provide Feedback")
