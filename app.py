@@ -5,7 +5,8 @@ import json
 import pandas as pd
 import matplotlib.pyplot as plt
 import io
-from hdfs import InsecureClient  # Required for HDFS access
+import pyarrow.parquet as pq
+from hdfs import InsecureClient  # HDFS Client
 
 # -------------------- CONFIGURATION --------------------
 st.set_page_config(
@@ -14,32 +15,12 @@ st.set_page_config(
     layout="wide",
 )
 
-# -------------------- CUSTOM STYLING --------------------
-st.markdown("""
-    <style>
-        .sidebar .sidebar-content {
-            background-color: #F0F0F0;
-        }
-        .stButton>button {
-            background-color: #FFD700;
-            color: black;
-            font-weight: bold;
-            border-radius: 5px;
-            padding: 10px 15px;
-        }
-        .stMarkdown {
-            font-size: 16px;
-            font-family: Arial, sans-serif;
-        }
-    </style>
-""", unsafe_allow_html=True)
+# -------------------- HDFS CONFIG --------------------
+HDFS_URL = "http://node-master:9870"  # WebHDFS Port (Ensure this is correct)
+HDFS_PATH = "/data/nyc_taxi_2023_clean"  # Path to Parquet files in HDFS
+client = InsecureClient(HDFS_URL, user="supakin")
 
-# -------------------- SETUP HDFS CONNECTION --------------------
-HDFS_URL = "http://node-master:50070"  # Update this if needed
-HDFS_PATH = "/data/nyc_taxi_2023_clean"  # HDFS directory for your Parquet files
-client = InsecureClient(HDFS_URL, user="supakin")  # Update user if needed
-
-# -------------------- FUNCTION TO SAVE & LOAD CHAT HISTORY --------------------
+# -------------------- FUNCTION TO LOAD CHAT HISTORY --------------------
 CHAT_HISTORY_FILE = "chat_history.json"
 
 def save_chat_history():
@@ -53,7 +34,7 @@ def load_chat_history():
     except FileNotFoundError:
         st.session_state.chat_history = []
 
-# Load chat history at startup
+# Load chat history
 if "chat_history" not in st.session_state:
     load_chat_history()
 
@@ -79,13 +60,10 @@ with st.sidebar:
     )
 
     st.warning("📌 **All responses are based strictly on 2023 data**.")  
-
     st.divider()
 
     # Chat History Section
     st.markdown("### **Past Conversations**")
-
-    # Display previous chats as clickable buttons
     for i, chat in enumerate(st.session_state.chat_history):
         if st.button(chat["title"], key=f"chat_{i}"):
             st.session_state.messages = chat["messages"]
@@ -97,7 +75,7 @@ with st.sidebar:
         st.session_state.chat_history = []
         st.session_state.messages = []
         save_chat_history()
-        st.rerun()  # FIXED: Use `st.rerun()` instead of `st.experimental_rerun()`
+        st.rerun()
 
 # -------------------- SESSION STATE --------------------
 if "messages" not in st.session_state:
@@ -110,11 +88,9 @@ for message in st.session_state.messages:
 
 # -------------------- USER INPUT --------------------
 if user_input := st.chat_input("Ask about NYC taxis (2023 data only)! 🚖"):
-    # Display user input
     with st.chat_message("user", avatar="🧑"):
         st.markdown(user_input)
 
-    # Store user input
     st.session_state.messages.append({"role": "user", "content": user_input, "avatar": "🧑"})
 
     # -------------------- FETCH RESPONSE FROM DEEPSEEK API --------------------
@@ -123,7 +99,6 @@ if user_input := st.chat_input("Ask about NYC taxis (2023 data only)! 🚖"):
     else:
         try:
             chat_context = [{"role": msg["role"], "content": msg["content"]} for msg in st.session_state.messages]
-
             response = requests.post(
                 "https://api.deepseek.com/v1/chat/completions",
                 headers={"Authorization": f"Bearer {deepseek_api_key}", "Content-Type": "application/json"},
@@ -133,36 +108,30 @@ if user_input := st.chat_input("Ask about NYC taxis (2023 data only)! 🚖"):
         except Exception as e:
             response_text = f"⚠️ Error calling DeepSeek API: {e}"
 
-    # Display AI response
     with st.chat_message("assistant", avatar="🤖"):
         st.markdown(response_text)
 
-    # Store assistant response
     st.session_state.messages.append({"role": "assistant", "content": response_text, "avatar": "🤖"})
 
-    # Save chat to history
     st.session_state.chat_history.append({
         "title": f"{user_input[:30]}...",  
         "messages": st.session_state.messages
     })
-
-    # Save to file
     save_chat_history()
 
 # -------------------- LOAD PARQUET FILES FROM HDFS --------------------
 st.markdown("### 📊 NYC Taxi Data Insights (2023)")
-st.markdown("Below are some key insights into the taxi rides in NYC for 2023.")
 
 try:
-    parquet_files = client.list(HDFS_PATH)  # List files in HDFS directory
+    parquet_files = client.list(HDFS_PATH)
 
     if parquet_files:
         df_list = []
         for file in parquet_files:
             with client.read(f"{HDFS_PATH}/{file}") as reader:
-                parquet_data = io.BytesIO(reader.read())  # Read Parquet file into memory
-                df_list.append(pd.read_parquet(parquet_data))  # Load into Pandas
-        
+                table = pq.read_table(reader)  # Efficiently read Parquet into Arrow Table
+                df_list.append(table.to_pandas())
+
         df = pd.concat(df_list, ignore_index=True)
 
         if "hour" in df.columns and "fare_amount" in df.columns:
@@ -170,13 +139,12 @@ try:
             fig, ax = plt.subplots()
             df.groupby("hour")["fare_amount"].mean().plot(kind="bar", ax=ax)
             st.pyplot(fig)
-
             st.write(df.describe())
         else:
-            st.warning("⚠️ **Missing 'hour' or 'fare_amount' column in the dataset.** Check Parquet files.")
+            st.warning("⚠️ **Missing 'hour' or 'fare_amount' column in dataset.** Check Parquet files.")
 
     else:
-        st.error("🚨 **No Parquet files found in HDFS!** Please check HDFS directory path.")
+        st.error("🚨 **No Parquet files found in HDFS!**")
 
 except Exception as e:
     st.error(f"❌ **Error loading Parquet files from HDFS:** {str(e)}")
