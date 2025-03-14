@@ -1,6 +1,9 @@
 import streamlit as st
 import requests
 import os
+import json
+import pandas as pd
+import matplotlib.pyplot as plt
 
 # -------------------- CONFIGURATION --------------------
 st.set_page_config(
@@ -8,6 +11,44 @@ st.set_page_config(
     page_icon="🚖",
     layout="wide",
 )
+
+# -------------------- CUSTOM STYLING --------------------
+st.markdown("""
+    <style>
+        .sidebar .sidebar-content {
+            background-color: #F0F0F0;
+        }
+        .stButton>button {
+            background-color: #FFD700;
+            color: black;
+            font-weight: bold;
+            border-radius: 5px;
+            padding: 10px 15px;
+        }
+        .stMarkdown {
+            font-size: 16px;
+            font-family: Arial, sans-serif;
+        }
+    </style>
+""", unsafe_allow_html=True)
+
+# -------------------- FUNCTION TO SAVE & LOAD CHAT HISTORY --------------------
+CHAT_HISTORY_FILE = "chat_history.json"
+
+def save_chat_history():
+    with open(CHAT_HISTORY_FILE, "w") as f:
+        json.dump(st.session_state.chat_history, f)
+
+def load_chat_history():
+    try:
+        with open(CHAT_HISTORY_FILE, "r") as f:
+            st.session_state.chat_history = json.load(f)
+    except FileNotFoundError:
+        st.session_state.chat_history = []
+
+# Load chat history at startup
+if "chat_history" not in st.session_state:
+    load_chat_history()
 
 # -------------------- SIDEBAR (ChatGPT-style Chat Management) --------------------
 with st.sidebar:
@@ -37,16 +78,19 @@ with st.sidebar:
     # Chat History Section
     st.markdown("### **Past Conversations**")
 
-    if "chat_history" not in st.session_state:
-        st.session_state.chat_history = []
-
-    # Optimized chat history retrieval
-    for chat in st.session_state.chat_history:
-        if st.button(chat["title"]):
+    # Display previous chats as clickable buttons
+    for i, chat in enumerate(st.session_state.chat_history):
+        if st.button(chat["title"], key=f"chat_{i}"):
             st.session_state.messages = chat["messages"]
 
-    if st.button("🆕 Start New Chat"):
+    if st.button("🆕 Start New Chat", key="new_chat"):
         st.session_state.messages = []
+
+    if st.button("🗑️ Clear All Chats", key="clear_history"):
+        st.session_state.chat_history = []
+        st.session_state.messages = []
+        save_chat_history()
+        st.experimental_rerun()
 
 # -------------------- SESSION STATE (CHAT MEMORY) --------------------
 if "messages" not in st.session_state:
@@ -72,15 +116,15 @@ if user_input := st.chat_input("Ask about NYC taxis (2024 data only)! 🚖"):
     else:
         try:
             # Ensure AI is strictly using 2024 data
-            prompt = (
-                f"You are an AI analyzing NYC Taxi & Limousine Commission data. "
-                f"⚠️ **Only respond based on 2024 data.** Do NOT use data from previous years.\n\n"
-                f"User Query: {user_input}"
-            )
+            chat_context = [
+                {"role": msg["role"], "content": msg["content"]}
+                for msg in st.session_state.messages
+            ]
+
             response = requests.post(
                 "https://api.deepseek.com/v1/chat/completions",
                 headers={"Authorization": f"Bearer {deepseek_api_key}", "Content-Type": "application/json"},
-                json={"model": "deepseek-chat", "messages": [{"role": "user", "content": prompt}]},
+                json={"model": "deepseek-chat", "messages": chat_context},
             )
             response_text = (
                 response.json()
@@ -103,3 +147,31 @@ if user_input := st.chat_input("Ask about NYC taxis (2024 data only)! 🚖"):
         "title": f"{user_input[:30]}...",  # Save first 30 characters as title
         "messages": st.session_state.messages
     })
+
+    # Save to file
+    save_chat_history()
+
+# -------------------- DISPLAY DATA VISUALIZATIONS --------------------
+st.markdown("### 📊 NYC Taxi Data Insights (2024)")
+st.markdown("Below are some key insights into the taxi rides in NYC for 2024.")
+
+try:
+    # Load sample taxi data
+    df = pd.read_csv("nyc_taxi_2024.csv")
+
+    # Plot ride trends
+    fig, ax = plt.subplots()
+    df.groupby("hour")["fare_amount"].mean().plot(kind="bar", ax=ax)
+    st.pyplot(fig)
+
+    # Display summary stats
+    st.write(df.describe())
+
+except FileNotFoundError:
+    st.error("📉 No taxi data available. Please upload `nyc_taxi_2024.csv` to enable insights.")
+
+# -------------------- ADD FEEDBACK SYSTEM --------------------
+st.markdown("### ⭐ Provide Feedback")
+rating = st.radio("Was this answer helpful?", ["👍 Yes", "👎 No"], key="rating")
+if rating == "👎 No":
+    st.text_area("How can we improve?", key="feedback_input")
