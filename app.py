@@ -4,6 +4,7 @@ import os
 import json
 import pandas as pd
 import matplotlib.pyplot as plt
+import glob
 
 # -------------------- CONFIGURATION --------------------
 st.set_page_config(
@@ -58,12 +59,12 @@ with st.sidebar:
     st.markdown("### **Project Details**")
     st.markdown(
         """
-        **NYC Taxi Chatbot** helps analyze taxi & limousine data from **2024 ONLY**.  
+        **NYC Taxi Chatbot** helps analyze taxi & limousine data from **2023 ONLY**.  
         Data is sourced from NYC's **Taxi & Limousine Commission (TLC)**.
 
         **Key Features:**
         - 🚖 Get insights on taxi pickups & fares.
-        - 📊 Analyze ride trends from 2024.
+        - 📊 Analyze ride trends from 2023.
         - 🔎 Ask about locations, peak hours, and more.
 
         **📂 Data Source:**  
@@ -71,7 +72,7 @@ with st.sidebar:
         """
     )
 
-    st.warning("📌 **All responses are based strictly on 2024 data**.")  # User notice
+    st.warning("📌 **All responses are based strictly on 2023 data**.")  # User notice
 
     st.divider()
 
@@ -102,7 +103,7 @@ for message in st.session_state.messages:
         st.markdown(message["content"])
 
 # -------------------- USER INPUT --------------------
-if user_input := st.chat_input("Ask about NYC taxis (2024 data only)! 🚖"):
+if user_input := st.chat_input("Ask about NYC taxis (2023 data only)! 🚖"):
     # Display user input
     with st.chat_message("user", avatar="🧑"):
         st.markdown(user_input)
@@ -115,7 +116,7 @@ if user_input := st.chat_input("Ask about NYC taxis (2024 data only)! 🚖"):
         response_text = "⚠️ API key not found. Please check your environment settings."
     else:
         try:
-            # Ensure AI is strictly using 2024 data
+            # Ensure AI is strictly using 2023 data
             chat_context = [
                 {"role": msg["role"], "content": msg["content"]}
                 for msg in st.session_state.messages
@@ -151,27 +152,39 @@ if user_input := st.chat_input("Ask about NYC taxis (2024 data only)! 🚖"):
     # Save to file
     save_chat_history()
 
-# -------------------- DISPLAY DATA VISUALIZATIONS --------------------
-st.markdown("### 📊 NYC Taxi Data Insights (2024)")
-st.markdown("Below are some key insights into the taxi rides in NYC for 2024.")
+# -------------------- LOAD AND DISPLAY DATA --------------------
+DATA_DIR = "D:/nyc_taxi_2023_clean/"  # Change to your correct directory
 
-try:
-    # Load sample taxi data
-    df = pd.read_csv("nyc_taxi_2024.csv")
+@st.cache_data
+def load_parquet_data(data_dir):
+    """Loads and merges all Parquet files from the given directory."""
+    try:
+        parquet_files = glob.glob(os.path.join(data_dir, "*.parquet"))  # Load all Parquet files
+        if not parquet_files:
+            return None, "⚠️ No Parquet files found!"
+        
+        df_list = [pd.read_parquet(file, engine="pyarrow") for file in parquet_files]
+        combined_df = pd.concat(df_list, ignore_index=True)  # Merge into one DataFrame
+        return combined_df, "✅ NYC Taxi 2023 Data Loaded Successfully!"
+    
+    except Exception as e:
+        return None, f"⚠️ Error loading Parquet files: {e}"
 
-    # Plot ride trends
+df, status_message = load_parquet_data(DATA_DIR)
+
+st.markdown("### 📊 NYC Taxi Data Insights (2023)")
+st.markdown("Below are some key insights into the taxi rides in NYC for 2023.")
+
+if df is None:
+    st.error(status_message)
+else:
+    st.success(status_message)
+    st.write(df.head())  # Show first few rows
+
+    # Visualization: Ride Trends by Hour
     fig, ax = plt.subplots()
     df.groupby("hour")["fare_amount"].mean().plot(kind="bar", ax=ax)
     st.pyplot(fig)
 
-    # Display summary stats
+    # Show summary stats
     st.write(df.describe())
-
-except FileNotFoundError:
-    st.error("📉 No taxi data available. Please upload `nyc_taxi_2024.csv` to enable insights.")
-
-# -------------------- ADD FEEDBACK SYSTEM --------------------
-st.markdown("### ⭐ Provide Feedback")
-rating = st.radio("Was this answer helpful?", ["👍 Yes", "👎 No"], key="rating")
-if rating == "👎 No":
-    st.text_area("How can we improve?", key="feedback_input")
