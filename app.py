@@ -33,6 +33,9 @@ st.markdown("""
     </style>
 """, unsafe_allow_html=True)
 
+# -------------------- SET DATA PATH --------------------
+DATA_PATH = r"D:\nyc_taxi_2023_clean"  # Ensure this matches your actual folder path
+
 # -------------------- FUNCTION TO SAVE & LOAD CHAT HISTORY --------------------
 CHAT_HISTORY_FILE = "chat_history.json"
 
@@ -51,7 +54,7 @@ def load_chat_history():
 if "chat_history" not in st.session_state:
     load_chat_history()
 
-# -------------------- SIDEBAR (ChatGPT-style Chat Management) --------------------
+# -------------------- SIDEBAR --------------------
 with st.sidebar:
     st.image("https://upload.wikimedia.org/wikipedia/commons/7/78/NYC_Taxi.svg", width=100)
     st.title("NYC Taxi Data Analytics 🚖")
@@ -72,7 +75,7 @@ with st.sidebar:
         """
     )
 
-    st.warning("📌 **All responses are based strictly on 2023 data**.")  # User notice
+    st.warning("📌 **All responses are based strictly on 2023 data**.")  
 
     st.divider()
 
@@ -91,9 +94,9 @@ with st.sidebar:
         st.session_state.chat_history = []
         st.session_state.messages = []
         save_chat_history()
-        st.experimental_rerun()
+        st.rerun()  # FIXED: Use `st.rerun()` instead of `st.experimental_rerun()`
 
-# -------------------- SESSION STATE (CHAT MEMORY) --------------------
+# -------------------- SESSION STATE --------------------
 if "messages" not in st.session_state:
     st.session_state.messages = []
 
@@ -116,23 +119,14 @@ if user_input := st.chat_input("Ask about NYC taxis (2023 data only)! 🚖"):
         response_text = "⚠️ API key not found. Please check your environment settings."
     else:
         try:
-            # Ensure AI is strictly using 2023 data
-            chat_context = [
-                {"role": msg["role"], "content": msg["content"]}
-                for msg in st.session_state.messages
-            ]
+            chat_context = [{"role": msg["role"], "content": msg["content"]} for msg in st.session_state.messages]
 
             response = requests.post(
                 "https://api.deepseek.com/v1/chat/completions",
                 headers={"Authorization": f"Bearer {deepseek_api_key}", "Content-Type": "application/json"},
                 json={"model": "deepseek-chat", "messages": chat_context},
             )
-            response_text = (
-                response.json()
-                .get("choices", [{}])[0]
-                .get("message", {})
-                .get("content", "No response.")
-            )
+            response_text = response.json().get("choices", [{}])[0].get("message", {}).get("content", "No response.")
         except Exception as e:
             response_text = f"⚠️ Error calling DeepSeek API: {e}"
 
@@ -145,46 +139,42 @@ if user_input := st.chat_input("Ask about NYC taxis (2023 data only)! 🚖"):
 
     # Save chat to history
     st.session_state.chat_history.append({
-        "title": f"{user_input[:30]}...",  # Save first 30 characters as title
+        "title": f"{user_input[:30]}...",  
         "messages": st.session_state.messages
     })
 
     # Save to file
     save_chat_history()
 
-# -------------------- LOAD AND DISPLAY DATA --------------------
-DATA_DIR = "D:/nyc_taxi_2023_clean/"  # Change to your correct directory
-
-@st.cache_data
-def load_parquet_data(data_dir):
-    """Loads and merges all Parquet files from the given directory."""
-    try:
-        parquet_files = glob.glob(os.path.join(data_dir, "*.parquet"))  # Load all Parquet files
-        if not parquet_files:
-            return None, "⚠️ No Parquet files found!"
-        
-        df_list = [pd.read_parquet(file, engine="pyarrow") for file in parquet_files]
-        combined_df = pd.concat(df_list, ignore_index=True)  # Merge into one DataFrame
-        return combined_df, "✅ NYC Taxi 2023 Data Loaded Successfully!"
-    
-    except Exception as e:
-        return None, f"⚠️ Error loading Parquet files: {e}"
-
-df, status_message = load_parquet_data(DATA_DIR)
-
+# -------------------- LOAD PARQUET FILES --------------------
 st.markdown("### 📊 NYC Taxi Data Insights (2023)")
 st.markdown("Below are some key insights into the taxi rides in NYC for 2023.")
 
-if df is None:
-    st.error(status_message)
+# Find all parquet files
+parquet_files = glob.glob(f"{DATA_PATH}/*.parquet")
+
+if parquet_files:
+    try:
+        df_list = [pd.read_parquet(file) for file in parquet_files]
+        df = pd.concat(df_list, ignore_index=True)
+
+        if "hour" in df.columns and "fare_amount" in df.columns:
+            st.markdown("#### 🚖 Taxi Rides by Hour")
+            fig, ax = plt.subplots()
+            df.groupby("hour")["fare_amount"].mean().plot(kind="bar", ax=ax)
+            st.pyplot(fig)
+
+            st.write(df.describe())
+        else:
+            st.warning("⚠️ **Missing 'hour' or 'fare_amount' column in the dataset.** Check Parquet files.")
+
+    except Exception as e:
+        st.error(f"❌ **Error loading Parquet files:** {str(e)}")
 else:
-    st.success(status_message)
-    st.write(df.head())  # Show first few rows
+    st.error("🚨 **No Parquet files found!** Please check the directory path.")
 
-    # Visualization: Ride Trends by Hour
-    fig, ax = plt.subplots()
-    df.groupby("hour")["fare_amount"].mean().plot(kind="bar", ax=ax)
-    st.pyplot(fig)
-
-    # Show summary stats
-    st.write(df.describe())
+# -------------------- ADD FEEDBACK SYSTEM --------------------
+st.markdown("### ⭐ Provide Feedback")
+rating = st.radio("Was this answer helpful?", ["👍 Yes", "👎 No"], key="rating")
+if rating == "👎 No":
+    st.text_area("How can we improve?", key="feedback_input")
