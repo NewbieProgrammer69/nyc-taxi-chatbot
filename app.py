@@ -140,19 +140,35 @@ if st.button("Submit Query"):
                     yellow_df = df[df["VendorID"] == 1] if "VendorID" in df.columns else pd.DataFrame()
                     st.write(f"📊 **Total Yellow Taxi Rides:** {len(yellow_df):,}" if not yellow_df.empty else "⚠️ No Yellow Taxi data found.")
 
-                elif "fhv" in user_query.lower():
-                    st.write("🚖 **Finding FHV rides...**")
-                    fhv_files = [file for file in selected_files if "fhv_tripdata" in file]
-                    fhv_df_list = [df[df["VendorID"].isna()] if "VendorID" in df.columns else df for file in fhv_files]
-                    fhv_df = pd.concat(fhv_df_list, ignore_index=True) if fhv_df_list else pd.DataFrame()
-                    st.write(f"📊 **Total FHV Rides:** {len(fhv_df):,}" if not fhv_df.empty else "⚠️ No FHV data found.")
-
                 elif "fhvhv" in user_query.lower():
                     st.write("🚖 **Finding FHVHV rides...**")
-                    fhvhv_files = [file for file in selected_files if "fhvhv_tripdata" in file]
-                    fhvhv_df_list = [df[df["VendorID"].isna()] if "VendorID" in df.columns else df for file in fhvhv_files]
-                    fhvhv_df = pd.concat(fhvhv_df_list, ignore_index=True) if fhvhv_df_list else pd.DataFrame()
-                    st.write(f"📊 **Total FHVHV Rides:** {len(fhvhv_df):,}" if not fhvhv_df.empty else "⚠️ No FHVHV data found.")
+                    fhvhv_df_list = []
+                    for file, pickup_col in selected_files.items():
+                        if "fhvhv_tripdata" in file:
+                            file_path = f"{HDFS_PATH}/{file}"
+                            df_chunk = load_csv_lazy(file_path, pickup_col)  # Load file in chunks
+                            if not df_chunk.empty:
+                                fhvhv_df_list.append(df_chunk)
+                    if fhvhv_df_list:
+                        fhvhv_df = pd.concat(fhvhv_df_list, ignore_index=True)
+                        st.write(f"📊 **Total FHVHV Rides:** {len(fhvhv_df):,}")
+                    else:
+                        st.warning("⚠️ No FHVHV data found.")
+                
+                elif "fhv" in user_query.lower():
+                    st.write("🚖 **Finding FHV rides...**")
+                    fhv_df_list = []
+                    for file, pickup_col in selected_files.items():
+                        if "fhv_tripdata" in file and "fhvhv" not in file:  # Ensure only FHV and not FHVHV
+                            file_path = f"{HDFS_PATH}/{file}"
+                            df_chunk = load_csv_lazy(file_path, pickup_col)  # Load file in chunks
+                            if not df_chunk.empty:
+                                fhv_df_list.append(df_chunk)
+                    if fhv_df_list:
+                        fhv_df = pd.concat(fhv_df_list, ignore_index=True)
+                        st.write(f"📊 **Total FHV Rides:** {len(fhv_df):,}")
+                    else:
+                        st.warning("⚠️ No FHV data found.")
 
                 # ❌ Unrecognized query
                 else:
