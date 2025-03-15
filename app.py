@@ -1,51 +1,24 @@
 import streamlit as st
 import pandas as pd
-import io
 from hdfs import InsecureClient  # HDFS access
 
 # -------------------- CONFIGURATION --------------------
-st.set_page_config(
-    page_title="NYC Taxi Chatbot 🚖",
-    page_icon="🚖",
-    layout="wide",
-)
+st.set_page_config(page_title="NYC Taxi Chatbot 🚖", page_icon="🚖", layout="wide")
 
-# -------------------- CUSTOM STYLING --------------------
-st.markdown("""
-    <style>
-        .sidebar .sidebar-content {
-            background-color: #F0F0F0;
-        }
-        .stButton>button {
-            background-color: #FFD700;
-            color: black;
-            font-weight: bold;
-            border-radius: 5px;
-            padding: 10px 15px;
-        }
-        .stMarkdown {
-            font-size: 16px;
-            font-family: Arial, sans-serif;
-        }
-    </style>
-""", unsafe_allow_html=True)
-
-# -------------------- SETUP HDFS CONNECTION --------------------
-HDFS_URL = "http://node-master:9870"  
-HDFS_PATH = "/data/nyc_taxi_2_months_csv"  
+HDFS_URL = "http://node-master:9870"
+HDFS_PATH = "/data/nyc_taxi_2_months_csv"
 client = InsecureClient(HDFS_URL, user="supakin")
 
-# -------------------- SPECIFIC CSV FILES TO LOAD --------------------
-selected_files = [
-    "fhv_tripdata_2023-01.csv",
-    "fhv_tripdata_2023-02.csv",
-    "fhvhv_tripdata_2023-01.csv",
-    "fhvhv_tripdata_2023-02.csv",
-    "green_tripdata_2023-01.csv",
-    "green_tripdata_2023-02.csv",
-    "yellow_tripdata_2023-01.csv",
-    "yellow_tripdata_2023-02.csv",
-]
+selected_files = {
+    "fhv_tripdata_2023-01.csv": "pickup_datetime",
+    "fhv_tripdata_2023-02.csv": "pickup_datetime",
+    "fhvhv_tripdata_2023-01.csv": "pickup_datetime",
+    "fhvhv_tripdata_2023-02.csv": "pickup_datetime",
+    "green_tripdata_2023-01.csv": "lpep_pickup_datetime",
+    "green_tripdata_2023-02.csv": "lpep_pickup_datetime",
+    "yellow_tripdata_2023-01.csv": "tpep_pickup_datetime",
+    "yellow_tripdata_2023-02.csv": "tpep_pickup_datetime",
+}
 
 # -------------------- SIDEBAR -------------------- 
 with st.sidebar:
@@ -73,21 +46,28 @@ with st.sidebar:
     st.markdown("### **Selected Data Files**")
     st.write("\n".join(selected_files))  # Display loaded file names in sidebar
 
-# -------------------- FUNCTION TO LOAD CSV SEQUENTIALLY --------------------
-def load_csv_lazy(file_path, chunksize=100000):
-    """Load large CSV files in chunks and return concatenated DataFrame."""
+# -------------------- FUNCTION TO LOAD CSV IN CHUNKS --------------------
+def load_csv_lazy(file_path, pickup_col, chunksize=500000):
+    """Load CSV in chunks, handle missing columns dynamically."""
     chunk_list = []
     try:
         with client.read(file_path) as reader:
             for chunk in pd.read_csv(reader, chunksize=chunksize, low_memory=False):
-                # Fix column names for consistency
+                # Fix column names
                 chunk.columns = chunk.columns.str.replace("PUlocationID", "PULocationID", regex=False)
                 chunk.columns = chunk.columns.str.replace("DOlocationID", "DOLocationID", regex=False)
+
+                # Convert pickup_datetime if column exists
+                if pickup_col in chunk.columns:
+                    chunk[pickup_col] = pd.to_datetime(chunk[pickup_col], errors="coerce")
+
                 chunk_list.append(chunk)
+                del chunk  # Free memory
+
         return pd.concat(chunk_list, ignore_index=True) if chunk_list else pd.DataFrame()
     except Exception as e:
         st.error(f"❌ Error loading file: {file_path} - {e}")
-        return pd.DataFrame()  # Return empty DataFrame if error occurs
+        return pd.DataFrame()
 
 # -------------------- CHATBOX FOR USER INTERACTION --------------------
 st.markdown("## 💬 Ask NYC Taxi Chatbot")
@@ -100,9 +80,9 @@ if st.button("Submit Query"):
 
             # -------------------- QUERY PROCESSING --------------------
             df_list = []
-            for file in selected_files:
+            for file, pickup_col in selected_files.items():
                 file_path = f"{HDFS_PATH}/{file}"
-                df = load_csv_lazy(file_path)
+                df = load_csv_lazy(file_path, pickup_col)
                 if not df.empty:
                     df_list.append(df)
 
@@ -114,18 +94,17 @@ if st.button("Submit Query"):
                 # 🚖 **Total Taxi Rides**
                 if "how many taxi rides" in user_query.lower():
                     st.write("🚖 **Calculating total taxi rides...**")
-                    total_rides = len(df)
-                    st.write(f"📊 **Total Taxi Rides:** {total_rides:,}")
+                    st.write(f"📊 **Total Taxi Rides:** {len(df):,}")
 
                 # 📍 **Most Pickup Locations**
-                elif "most pickups" in user_query.lower():
+                elif any(keyword in user_query.lower() for keyword in ["most pickups", "top 5 pickup locations", "busiest locations"]):
                     st.write("📍 **Finding top pickup locations...**")
                     if "PULocationID" in df.columns:
                         pickup_counts = df["PULocationID"].value_counts().head(5)
                         st.write("### 🏆 Top 5 Pickup Locations")
                         st.write(pickup_counts)
                     else:
-                        st.warning("⚠️ Column 'PULocationID' not found in the dataset.")
+                        st.warning("⚠️ Column 'PULocationID' not found.")
 
                 # 💰 **Average Fare**
                 elif "average fare" in user_query.lower():
@@ -134,19 +113,21 @@ if st.button("Submit Query"):
                         avg_fare = df["fare_amount"].mean()
                         st.write(f"💲 **Average Fare Amount:** ${avg_fare:.2f}")
                     else:
-                        st.warning("⚠️ Column 'fare_amount' not found in the dataset.")
+                        st.warning("⚠️ Column 'fare_amount' not found.")
 
                 # ⏰ **Peak Hours**
                 elif "peak hours" in user_query.lower():
                     st.write("⏰ **Finding peak hours for taxi rides...**")
-                    if "pickup_datetime" in df.columns:
-                        df["pickup_datetime"] = pd.to_datetime(df["pickup_datetime"], errors='coerce')
-                        df["hour"] = df["pickup_datetime"].dt.hour
-                        peak_hours = df["hour"].value_counts().head(5)
+                    peak_hours = []
+                    for pickup_col in selected_files.values():
+                        if pickup_col in df.columns:
+                            df["hour"] = df[pickup_col].dt.hour
+                            peak_hours.append(df["hour"].value_counts().head(5))
+                    if peak_hours:
                         st.write("### ⏰ Top 5 Peak Hours")
-                        st.write(peak_hours)
+                        st.write(pd.concat(peak_hours).groupby(level=0).sum().sort_values(ascending=False).head(5))
                     else:
-                        st.warning("⚠️ Column 'pickup_datetime' not found in the dataset.")
+                        st.warning("⚠️ No pickup time column found.")
 
                 # 🚖 **Filter by Taxi Type**
                 elif "green taxi" in user_query.lower():
@@ -160,10 +141,20 @@ if st.button("Submit Query"):
                     st.write(f"📊 **Total Yellow Taxi Rides:** {len(yellow_df):,}" if not yellow_df.empty else "⚠️ No Yellow Taxi data found.")
 
                 elif "fhv" in user_query.lower():
-                    st.write("🚖 **Finding FHV (For-Hire Vehicle) rides...**")
-                    fhv_df = df[df["VendorID"].isna()] if "VendorID" in df.columns else df
+                    st.write("🚖 **Finding FHV rides...**")
+                    fhv_files = [file for file in selected_files if "fhv_tripdata" in file]
+                    fhv_df_list = [df[df["VendorID"].isna()] if "VendorID" in df.columns else df for file in fhv_files]
+                    fhv_df = pd.concat(fhv_df_list, ignore_index=True) if fhv_df_list else pd.DataFrame()
                     st.write(f"📊 **Total FHV Rides:** {len(fhv_df):,}" if not fhv_df.empty else "⚠️ No FHV data found.")
 
+                elif "fhvhv" in user_query.lower():
+                    st.write("🚖 **Finding FHVHV rides...**")
+                    fhvhv_files = [file for file in selected_files if "fhvhv_tripdata" in file]
+                    fhvhv_df_list = [df[df["VendorID"].isna()] if "VendorID" in df.columns else df for file in fhvhv_files]
+                    fhvhv_df = pd.concat(fhvhv_df_list, ignore_index=True) if fhvhv_df_list else pd.DataFrame()
+                    st.write(f"📊 **Total FHVHV Rides:** {len(fhvhv_df):,}" if not fhvhv_df.empty else "⚠️ No FHVHV data found.")
+
+                # ❌ Unrecognized query
                 else:
                     st.warning("⚠️ Sorry, I can't answer that question yet. Try asking about **most pickups, average fare, peak hours, or a specific taxi type.**")
 
