@@ -1,9 +1,5 @@
 import streamlit as st
-import requests
-import os
-import json
 import pandas as pd
-import matplotlib.pyplot as plt
 import io
 from hdfs import InsecureClient  
 
@@ -36,7 +32,7 @@ st.markdown("""
 
 # -------------------- SETUP HDFS CONNECTION --------------------
 HDFS_URL = "http://node-master:9870"  # Ensure this is correct
-HDFS_PATH = "/data/nyc_taxi_2023_clean"  # Path to Parquet files in HDFS
+HDFS_PATH = "/data/nyc_taxi_2_months_csv"  # Path to CSV files in HDFS
 client = InsecureClient(HDFS_URL, user="supakin")
 
 # -------------------- SIDEBAR --------------------
@@ -63,41 +59,43 @@ with st.sidebar:
     st.divider()
 
     # -------------------- USER INPUT: NUMBER OF MONTHS --------------------
-    num_months = st.slider("Select number of months to load:", 1, 12, 3)  # Default to 3 months
+    num_months = st.slider("Select number of months to load:", 1, 2, 2)  # 1-2 months
 
-# -------------------- LOAD PARQUET FILES FROM HDFS --------------------
+# -------------------- LOAD CSV FILES FROM HDFS --------------------
 st.markdown("### 📊 NYC Taxi Data Insights (2023)")
-st.markdown("Below are some key insights into the taxi rides in NYC for 2023.")
+st.markdown(f"**Showing data for the last {num_months} months**.")
 
 try:
-    # Get all Parquet files
-    all_files = client.list(HDFS_PATH)
-    
-    # Sort files by month and load only the selected number of months
-    selected_files = sorted(all_files)[:num_months]  
+    # Get all CSV files
+    all_files = sorted(client.list(HDFS_PATH))  
+
+    # Load only the requested number of months
+    selected_files = all_files[:num_months * 4]  # 4 files per month (yellow, green, fhv, fhvhv)
 
     if selected_files:
         df_list = []
         for file in selected_files:
             with client.read(f"{HDFS_PATH}/{file}") as reader:
-                parquet_data = io.BytesIO(reader.read())  
-                df = pd.read_parquet(parquet_data, engine="fastparquet")  
+                csv_data = io.BytesIO(reader.read())  
+                df = pd.read_csv(csv_data)  
                 df_list.append(df)
 
         df = pd.concat(df_list, ignore_index=True)
 
-        if "hour" in df.columns and "fare_amount" in df.columns:
+        # Ensure required columns exist before plotting
+        if "pickup_datetime" in df.columns and "fare_amount" in df.columns:
             st.markdown(f"#### 🚖 Taxi Rides by Hour (Last {num_months} Months)")
-            fig, ax = plt.subplots()
-            df.groupby("hour")["fare_amount"].mean().plot(kind="bar", ax=ax)
-            st.pyplot(fig)
+            df["pickup_hour"] = pd.to_datetime(df["pickup_datetime"]).dt.hour
+
+            fig = df.groupby("pickup_hour")["fare_amount"].mean().plot(kind="bar")
+            st.pyplot(fig.figure)
 
             st.write(df.describe())
         else:
-            st.warning("⚠️ **Missing 'hour' or 'fare_amount' column in the dataset.** Check Parquet files.")
+            st.warning("⚠️ **Missing 'pickup_datetime' or 'fare_amount' column in dataset.** Check CSV files.")
 
     else:
-        st.error("🚨 **No Parquet files found in HDFS!** Please check HDFS directory path.")
+        st.error("🚨 **No CSV files found in HDFS!** Please check HDFS directory path.")
 
 except Exception as e:
-    st.error(f"❌ **Error loading Parquet files from HDFS:** {str(e)}")
+    st.error(f"❌ **Error loading CSV files from HDFS:** {str(e)}")
